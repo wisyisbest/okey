@@ -21,3 +21,22 @@ export async function handle(fn: () => Promise<unknown>) {
     return NextResponse.json({ error: "Sunucu hatası" }, { status: 500 });
   }
 }
+
+const buckets = new Map<string, number[]>();
+
+/**
+ * Basit, sunucu örneği başına istek sınırı (en iyi çaba). Pencere içinde `max`
+ * istekten fazlası GameError ile reddedilir.
+ */
+export function rateLimit(key: string, max: number, windowMs: number) {
+  const now = Date.now();
+  const hits = (buckets.get(key) ?? []).filter((t) => now - t < windowMs);
+  if (hits.length >= max) throw new GameError("Çok hızlı, biraz bekleyin");
+  hits.push(now);
+  buckets.set(key, hits);
+  if (buckets.size > 5000) buckets.clear();
+}
+
+export function clientIp(req: Request): string {
+  return req.headers.get("x-forwarded-for")?.split(",")[0].trim() || "local";
+}

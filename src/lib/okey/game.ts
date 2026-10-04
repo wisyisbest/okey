@@ -1,6 +1,7 @@
 import { bestFinish, chooseDiscard, shouldTakeDiscard } from "./bot";
+import { BOT_LOSE_LINES, BOT_WIN_LINES, isAllowedMessage } from "./chat";
 import { checkWin } from "./rules";
-import { isFake, isJoker, okeyOf, shuffledDeck } from "./tiles";
+import { face, isFake, isJoker, okeyOf, shuffledDeck } from "./tiles";
 
 export const SEATS = 4;
 export const TURN_LIMIT_MS = 45_000;
@@ -21,6 +22,14 @@ export interface Player {
   lastSeen: number;
   /** Bot için 0..1 arası ustalık; düşükse daha sık hata yapar. */
   skill?: number;
+  /** Masadan kalkan oyuncunun adı (yerine bot oynuyorsa); aynı adla dönünce koltuğu geri alır. */
+  formerName?: string;
+}
+
+export interface ChatMessage {
+  seat: number;
+  text: string;
+  at: number;
 }
 
 export type Phase = "lobby" | "playing" | "ended";
@@ -62,6 +71,11 @@ export interface GameState {
   matchOver: boolean;
   lastAction: LastAction | null;
   lastEvent: string;
+  /** Her oyuncunun yerden aldığı taşlar (herkese açık bilgi; botlar takip eder) */
+  taken: number[][];
+  /** Bu elde göstergeyi gösterenler */
+  shown: boolean[];
+  chat: ChatMessage[];
 }
 
 export class GameError extends Error {}
@@ -101,6 +115,9 @@ export function createRoom(code: string, name: string, token: string, now: numbe
     matchOver: false,
     lastAction: null,
     lastEvent: `${name} odayı kurdu`,
+    taken: [[], [], [], []],
+    shown: new Array(SEATS).fill(false),
+    chat: [],
   };
 }
 
@@ -112,6 +129,9 @@ export function normalize(state: GameState): GameState {
   state.endedAt ??= 0;
   state.botStepAt ??= state.turnStartedAt;
   state.lastAction ??= null;
+  state.taken ??= [[], [], [], []];
+  state.shown ??= new Array(SEATS).fill(false);
+  state.chat ??= [];
   return state;
 }
 
@@ -123,17 +143,73 @@ export function isOnline(p: Player, now: number) {
   return p.isBot || now - p.lastSeen < OFFLINE_MS;
 }
 
-/** Odaya katılır. Oyun başladıysa bir botun yerine geçer. */
+/**
+ * Odaya katılır. Aynı adla bağlantısı kopmuş bir oyuncu ya da masadan kalkmış biri
+ * varsa onun koltuğunu geri alır; yoksa boş yere, oyun başladıysa bir botun yerine oturur.
+ */
 export function joinRoom(state: GameState, name: string, token: string, now: number): number {
   const existing = seatOf(state, token);
   if (existing >= 0) return existing;
-  let seat = state.seats.findIndex((p) => p === null);
+  const same = (n?: string) => !!n && n.toLocaleLowerCase("tr") === name.toLocaleLowerCase("tr");
+  let seat = state.seats.findIndex((p) => p && !p.isBot && !isOnline(p, now) && same(p.name));
+  if (seat < 0) seat = state.seats.findIndex((p) => p?.isBot && same(p.formerName));
+  if (seat < 0) seat = state.seats.findIndex((p) => p === null);
   if (seat < 0) seat = state.seats.findIndex((p) => p?.isBot);
   if (seat < 0) throw new GameError("Masa dolu");
   const replaced = state.seats[seat];
   state.seats[seat] = { token, name, isBot: false, lastSeen: now };
-  state.lastEvent = replaced ? `${name}, ${replaced.name} yerine oturdu` : `${name} masaya oturdu`;
+  if (!replaced) state.lastEvent = `${name} masaya oturdu`;
+  else if (replaced.isBot && !same(replaced.formerName)) state.lastEvent = `${name}, ${replaced.name} yerine oturdu`;
+  else state.lastEvent = `${name} masaya geri döndü`;
   return seat;
+}
+
+/** Masadan kalkar: lobide koltuk boşalır, oyunda yerine bot oynar. */
+export function leaveRoom(state: GameState, seat: number, now: number) {
+  const p = state.seats[seat];
+  if (!p || p.isBot) return;
+  if (state.phase === "lobby") {
+    state.seats[seat] = null;
+    if (state.host === seat) {
+      const next = state.seats.findIndex((x) => x && !x.isBot);
+      if (next >= 0) state.host = next;
+    }
+  } else {
+    state.seats[seat] = { token: `bot-${seat}-${now}`, name: p.name, isBot: true, lastSeen: now, skill: 0.6, formerName: p.name };
+    if (state.phase === "playing" && state.turn === seat) state.botStepAt = Math.max(state.botStepAt, now + 1200);
+  }
+  state.lastEvent = state.phase === "lobby" ? `${p.name} odadan ayrıldı` : `${p.name} masadan kalktı, yerine bot oynuyor`;
+}
+
+/** Göstergenin eşini elinde tutan, ilk taşını atmadan önce gösterip diğerlerinden 1 puan alır. */
+export function canShowIndicator(state: GameState, seat: number): boolean {
+  if (state.phase !== "playing" || state.turn !== seat || state.shown[seat]) return false;
+  if (state.discards[seat].length > 0) return false;
+  const ind = face(state.indicator);
+  return state.hands[seat].some((t) => {
+    const f = face(t);
+    return f.color === ind.color && f.num === ind.num;
+  });
+}
+
+export function showIndicator(state: GameState, seat: number) {
+  if (!canShowIndicator(state, seat)) throw new GameError("Gösterge gösterilemez");
+  state.shown[seat] = true;
+  for (let s = 0; s < SEATS; s++) if (s !== seat) state.scores[s] -= 1;
+  state.lastEvent = `${state.seats[seat]!.name} göstergeyi gösterdi (diğerleri -1)`;
+}
+
+const CHAT_LIMIT = 12;
+
+export function say(state: GameState, seat: number, text: string, now: number) {
+  if (!isAllowedMessage(text)) throw new GameError("Geçersiz mesaj");
+  const last = [...state.chat].reverse().find((m) => m.seat === seat);
+  if (last && now - last.at < 1500) throw new GameError("Biraz yavaş 🙂");
+  state.chat = [...state.chat, { seat, text, at: now }].slice(-CHAT_LIMIT);
+}
+
+function botSay(state: GameState, seat: number, lines: string[], now: number, rng: () => number) {
+  state.chat = [...state.chat, { seat, text: lines[Math.floor(rng() * lines.length)], at: now }].slice(-CHAT_LIMIT);
 }
 
 function fillBots(state: GameState, now: number, rng: () => number) {
@@ -173,6 +249,8 @@ function deal(state: GameState, now: number, rng: () => number) {
   }
   state.deck = deck;
   state.discards = [[], [], [], []];
+  state.taken = [[], [], [], []];
+  state.shown = new Array(SEATS).fill(false);
   state.turn = state.dealer;
   state.drawn = true; // ilk oyuncu 15 taşla başlar, sadece atar
   state.phase = "playing";
@@ -203,7 +281,9 @@ export function drawTile(state: GameState, seat: number, from: "deck" | "discard
   if (from === "discard") {
     const pile = state.discards[prevSeat(seat)];
     if (!pile.length) throw new GameError("Yerde taş yok");
-    state.hands[seat].push(pile.pop()!);
+    const tile = pile.pop()!;
+    state.hands[seat].push(tile);
+    state.taken[seat].push(tile);
     state.lastEvent = `${name} yerden aldı`;
     state.lastAction = { type: "take", seat, at: now };
   } else {
@@ -258,7 +338,7 @@ function endHand(state: GameState, winner: number | null, type: EndType, now: nu
   state.matchOver = state.scores.some((x) => x <= 0);
 }
 
-export function finishHand(state: GameState, seat: number, tile: number, now = Date.now()) {
+export function finishHand(state: GameState, seat: number, tile: number, now = Date.now(), rng = Math.random) {
   assertTurn(state, seat);
   if (!state.drawn) throw new GameError("Önce taş çekmelisiniz");
   const okey = okeyOf(state.indicator);
@@ -273,6 +353,10 @@ export function finishHand(state: GameState, seat: number, tile: number, now = D
   endHand(state, seat, type, now);
   const how = type === "okey" ? " (okey atarak!)" : type === "pairs" ? " (çiftten)" : "";
   state.lastEvent = `${state.seats[seat]!.name} eli bitirdi${how}`;
+  // Botlar ara sıra laf atar
+  if (state.seats[seat]!.isBot && rng() < 0.6) botSay(state, seat, BOT_WIN_LINES, now + 300, rng);
+  const loser = state.seats.findIndex((p, s) => s !== seat && p?.isBot);
+  if (loser >= 0 && rng() < 0.5) botSay(state, loser, BOT_LOSE_LINES, now + 1200, rng);
 }
 
 /** Sıradaki oyuncu için tek adım oynar: çekmediyse çeker, çektiyse atar ya da biter. */
@@ -286,9 +370,11 @@ export function autoStep(state: GameState, seat: number, now: number, rng = Math
     drawTile(state, seat, take ? "discard" : "deck", now, rng);
     return;
   }
+  if (canShowIndicator(state, seat) && rng() < 0.9) showIndicator(state, seat);
   const fin = bestFinish(state.hands[seat], okey);
-  if (fin !== null) return finishHand(state, seat, fin, now);
-  discardTile(state, seat, chooseDiscard(state.hands[seat], okey, skill, rng), now, rng);
+  if (fin !== null) return finishHand(state, seat, fin, now, rng);
+  const context = { nextTaken: state.taken[nextSeat(seat)], seen: state.discards.flat() };
+  discardTile(state, seat, chooseDiscard(state.hands[seat], okey, skill, rng, context), now, rng);
 }
 
 export function turnDeadline(state: GameState, now: number): number {
@@ -296,6 +382,12 @@ export function turnDeadline(state: GameState, now: number): number {
   if (p.isBot) return state.botStepAt;
   if (!isOnline(p, now)) return Math.max(state.botStepAt, state.turnStartedAt + OFFLINE_TURN_MS);
   return state.turnStartedAt + TURN_LIMIT_MS;
+}
+
+/** advance() bir şey değiştirecek mi? (polling'de gereksiz yazmayı önler) */
+export function needsAdvance(state: GameState, now: number): boolean {
+  if (state.phase === "playing") return now >= turnDeadline(state, now);
+  return state.phase === "ended" && !state.matchOver && now - state.endedAt > NEXT_HAND_MS;
 }
 
 /** Zamanı gelen bot / süre aşımı hamlelerini oynatır, el arası bekleyişi yönetir. */

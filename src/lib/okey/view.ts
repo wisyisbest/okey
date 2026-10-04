@@ -1,4 +1,6 @@
 import {
+  canShowIndicator,
+  ChatMessage,
   EndType,
   GameState,
   isOnline,
@@ -50,6 +52,9 @@ export interface PlayerView {
   nextHandAt: number | null;
   lastAction: LastAction | null;
   lastEvent: string;
+  chat: ChatMessage[];
+  /** Göstergeyi şimdi gösterebilir miyim? */
+  canShow: boolean;
 }
 
 export function playerView(state: GameState, token: string, now: number): PlayerView {
@@ -97,5 +102,7 @@ export function playerView(state: GameState, token: string, now: number): Player
     nextHandAt: state.phase === "ended" && !state.matchOver ? state.endedAt + NEXT_HAND_MS : null,
     lastAction: state.lastAction,
     lastEvent: state.lastEvent,
+    chat: state.chat,
+    canShow: mySeat >= 0 && canShowIndicator(state, mySeat),
   };
 }

@@ -4,10 +4,10 @@ import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Game } from "@/components/Game";
 import { Lobby } from "@/components/Lobby";
-import { Action, ApiError, fetchView, lsGet, lsSet, sendAction, tokenKey } from "@/lib/client";
+import { Action, ApiError, fetchView, lsGet, lsRemove, lsSet, sendAction, tokenKey } from "@/lib/client";
 import type { PlayerView } from "@/lib/okey/view";
 
-const POLL_MS = 1000;
+const POLL_MS = 800;
 
 export default function RoomPage() {
   const { code } = useParams<{ code: string }>();
@@ -103,7 +103,18 @@ export default function RoomPage() {
     [code, token, applyView],
   );
 
-  const leave = () => router.push("/");
+  // Masadan kalk: lobide koltuk boşalır, oyunda yerine bot oynar
+  const leave = async () => {
+    if (token) {
+      try {
+        await sendAction(code, token, { type: "leave" });
+      } catch {
+        // bağlantı yoksa da çık
+      }
+      lsRemove(tokenKey(code));
+    }
+    router.push("/");
+  };
 
   if (notFound) {
     return (
@@ -111,7 +122,7 @@ export default function RoomPage() {
         <div className="card">
           <h1>Oda bulunamadı</h1>
           <p className="muted">Kod yanlış olabilir ya da odanın süresi dolmuş.</p>
-          <button className="primary" onClick={leave}>
+          <button className="primary" onClick={() => router.push("/")}>
             Ana sayfa
           </button>
         </div>

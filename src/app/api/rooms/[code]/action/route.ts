@@ -1,4 +1,4 @@
-import { cleanName, handle, newToken } from "@/lib/api";
+import { cleanName, clientIp, handle, newToken, rateLimit } from "@/lib/api";
 import {
   advance,
   discardTile,
@@ -6,7 +6,10 @@ import {
   finishHand,
   GameError,
   joinRoom,
+  leaveRoom,
+  say,
   seatOf,
+  showIndicator,
   startGame,
 } from "@/lib/okey/game";
 import { playerView } from "@/lib/okey/view";
@@ -16,6 +19,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ code: string }
   const { code } = await ctx.params;
   return handle(async () => {
     const body = await req.json().catch(() => ({}));
+    rateLimit(`action:${clientIp(req)}`, 40, 10_000);
     let token: string = typeof body.token === "string" ? body.token : "";
     if (body.type === "join" && !token) token = newToken();
 
@@ -44,6 +48,15 @@ export async function POST(req: Request, ctx: { params: Promise<{ code: string }
           break;
         case "finish":
           finishHand(state, seat, tile, now);
+          break;
+        case "leave":
+          leaveRoom(state, seat, now);
+          break;
+        case "show":
+          showIndicator(state, seat);
+          break;
+        case "say":
+          say(state, seat, String(body.text ?? ""), now);
           break;
         default:
           throw new GameError("Geçersiz işlem");

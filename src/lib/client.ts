@@ -18,6 +18,14 @@ export function lsSet(key: string, value: string) {
   }
 }
 
+export function lsRemove(key: string) {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // yok say
+  }
+}
+
 export const tokenKey = (code: string) => `okey:token:${code}`;
 
 export class ApiError extends Error {
@@ -55,7 +63,10 @@ export type Action =
   | { type: "newMatch" }
   | { type: "draw"; from: "deck" | "discard" }
   | { type: "discard"; tile: number }
-  | { type: "finish"; tile: number };
+  | { type: "finish"; tile: number }
+  | { type: "leave" }
+  | { type: "show" }
+  | { type: "say"; text: string };
 
 export function sendAction(code: string, token: string, action: Action) {
   return request<{ token: string; view: PlayerView }>(`/api/rooms/${code}/action`, {

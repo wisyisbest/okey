@@ -1,5 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { advance, createRoom, discardTile, drawTile, finishHand, GameError, joinRoom, startGame } from "../src/lib/okey/game";
+import {
+  advance,
+  canShowIndicator,
+  createRoom,
+  discardTile,
+  drawTile,
+  finishHand,
+  GameError,
+  joinRoom,
+  leaveRoom,
+  say,
+  showIndicator,
+  startGame,
+} from "../src/lib/okey/game";
+import { chooseDiscard } from "../src/lib/okey/bot";
 import { arrangeGroups, checkWin } from "../src/lib/okey/rules";
 import { Face, okeyOf } from "../src/lib/okey/tiles";
 
@@ -145,8 +159,8 @@ describe("maç ve puanlama", () => {
     while (s.phase === "playing") advance(s, (now += 1000));
     if (s.winner !== null) {
       const penalty = s.endType === "normal" ? 2 : 4;
-      expect(s.scores.filter((x) => x === 20 - penalty).length).toBe(3);
-      expect(s.scores[s.winner]).toBe(20);
+      expect(s.lastDelta.filter((x) => x === -penalty).length).toBe(3);
+      expect(s.lastDelta[s.winner]).toBe(0);
     }
     const hand = s.handNo;
     advance(s, s.endedAt + 16_000);
@@ -161,5 +175,79 @@ describe("maç ve puanlama", () => {
       advance(s, s.endedAt + 60_000);
       expect(s.phase).toBe("ended");
     }
+  });
+});
+
+describe("masadan kalkma ve geri dönme", () => {
+  it("oyunda kalkan oyuncunun yerine bot oynar, aynı adla dönünce koltuğu geri alır", () => {
+    const s = createRoom("5", "Ali", "a", 0);
+    joinRoom(s, "Veli", "v", 0);
+    startGame(s, 0, 0);
+    const hand = [...s.hands[1]];
+    leaveRoom(s, 1, 10);
+    expect(s.seats[1]!.isBot).toBe(true);
+    const seat = joinRoom(s, "veli", "v2", 20);
+    expect(seat).toBe(1);
+    expect(s.seats[1]!.isBot).toBe(false);
+    expect(s.hands[1]).toEqual(hand);
+  });
+
+  it("bağlantısı kopan oyuncu aynı adla başka cihazdan dönebilir", () => {
+    const s = createRoom("6", "Ali", "a", 0);
+    joinRoom(s, "Veli", "v", 0);
+    startGame(s, 0, 0);
+    expect(joinRoom(s, "Veli", "v-yeni", 60_000)).toBe(1);
+    expect(s.seats[1]!.token).toBe("v-yeni");
+  });
+
+  it("lobide oda sahibi çıkınca sahiplik devredilir", () => {
+    const s = createRoom("7", "Ali", "a", 0);
+    joinRoom(s, "Veli", "v", 0);
+    leaveRoom(s, 0, 1);
+    expect(s.seats[0]).toBeNull();
+    expect(s.host).toBe(1);
+  });
+});
+
+describe("gösterge ve mesajlar", () => {
+  it("göstergenin eşini gösteren diğerlerinden 1 puan alır, bir kez", () => {
+    const s = createRoom("8", "Ali", "a", 0);
+    startGame(s, 0, 0);
+    const ind = s.indicator;
+    const twin = ind >= 52 ? ind - 52 : ind + 52;
+    // İkizi başlayan oyuncunun eline koy
+    for (let k = 0; k < 4; k++) s.hands[k] = s.hands[k].filter((x) => x !== twin);
+    s.deck = s.deck.filter((x) => x !== twin);
+    s.hands[s.turn].push(twin);
+    const seat = s.turn;
+    expect(canShowIndicator(s, seat)).toBe(true);
+    showIndicator(s, seat);
+    expect(s.scores.filter((x) => x === 19).length).toBe(3);
+    expect(s.scores[seat]).toBe(20);
+    expect(() => showIndicator(s, seat)).toThrow(GameError);
+  });
+
+  it("sadece hazır mesajlar gönderilebilir", () => {
+    const s = createRoom("9", "Ali", "a", 0);
+    say(s, 0, "👍", 0);
+    expect(s.chat).toHaveLength(1);
+    expect(() => say(s, 0, "kötü söz", 5000)).toThrow(GameError);
+    expect(() => say(s, 0, "😂", 100)).toThrow(GameError);
+  });
+});
+
+describe("bot rakibi izler", () => {
+  it("sıradaki oyuncunun topladığı seriye yarayan taşı atmaktan kaçınır", () => {
+    // Eşit değerli iki yalnız taş: sarı 12 ve mavi 12. Rakip mavi 10-11 almış.
+    const hand = [
+      t(1, 1), t(1, 2), t(1, 3), t(0, 7), t(1, 7), t(3, 7), t(0, 9), t(0, 10), t(0, 11),
+      t(3, 2), t(3, 3), t(3, 4), t(2, 13, 1), t(3, 13, 1), t(0, 13, 1),
+    ];
+    const blue12 = t(2, 12);
+    const yellow12 = t(3, 12, 1);
+    const h = [...hand.slice(0, 12), blue12, yellow12, t(0, 13, 1)];
+    const ctx = { nextTaken: [t(2, 10), t(2, 11)], seen: [] };
+    const pick = chooseDiscard(h, okey, 1, () => 0, ctx);
+    expect(pick).not.toBe(blue12);
   });
 });

@@ -5,11 +5,12 @@ import type { Action } from "@/lib/client";
 import { lsGet, lsSet } from "@/lib/client";
 import { bestFinish } from "@/lib/okey/bot";
 import { arrangeGroups, arrangePairs } from "@/lib/okey/rules";
-import { Face, okeyOf } from "@/lib/okey/tiles";
-import type { PlayerView, SeatView } from "@/lib/okey/view";
-import { emptySlots, layoutGroups, moveTile, ROW, Slots, syncSlots } from "@/lib/rack";
+import { okeyOf } from "@/lib/okey/tiles";
+import type { PlayerView } from "@/lib/okey/view";
+import { emptySlots, layoutGroups, moveTile, RackShape, reshape, Slots, syncSlots, TALL, WIDE } from "@/lib/rack";
 import { useSounds } from "@/lib/sound";
 import { SugarBowl, TeaGlass } from "./Decor";
+import { ChatPanel, ConfirmLeave, EndOverlay, HistoryModal, Pile, SeatBox } from "./GameParts";
 import { Tile, TileBack } from "./Tile";
 
 interface Props {
@@ -20,14 +21,30 @@ interface Props {
   onLeave: () => void;
 }
 
+/** Sürükleme: ıstakadaki bir taş, ortadaki deste ya da soldaki yığın. */
 interface Drag {
-  tile: number;
+  kind: "rack" | "deck" | "pile";
+  tile: number | null;
   x0: number;
   y0: number;
   moved: boolean;
 }
 
-const rackKey = (code: string, handNo: number) => `okey:rack:${code}:${handNo}`;
+const BUBBLE_MS = 4000;
+const rackKey = (code: string, handNo: number, shape: RackShape) => `okey:rack:${code}:${handNo}:${shape.cols}`;
+
+/** Dikey ekranda 3×10, yatayda 2×13 ıstaka. */
+function useRackShape(): RackShape {
+  const [shape, setShape] = useState<RackShape>(WIDE);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-aspect-ratio: 1/1)");
+    const update = () => setShape(mq.matches ? TALL : WIDE);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, []);
+  return shape;
+}
 
 export function Game({ view, clockOffset, busy, onAction, onLeave }: Props) {
   const me = view.mySeat;
@@ -40,20 +57,39 @@ export function Game({ view, clockOffset, busy, onAction, onLeave }: Props) {
   const right = (me + 1) % 4;
   const leftPile = view.seats[left]?.discards ?? [];
 
-  const [slots, setSlots] = useState<Slots>(emptySlots);
+  const shape = useRackShape();
+  const [slots, setSlots] = useState<Slots>(() => emptySlots(WIDE));
+  const shapeRef = useRef<RackShape>(WIDE);
   const [selected, setSelected] = useState<number | null>(null);
   const [fresh, setFresh] = useState<number | null>(null);
-  const [ghost, setGhost] = useState<{ tile: number; x: number; y: number } | null>(null);
+  const [ghost, setGhost] = useState<{ tile: number | null; x: number; y: number } | null>(null);
   const [history, setHistory] = useState<number | null>(null);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [leaving, setLeaving] = useState(false);
   const drag = useRef<Drag | null>(null);
+  const suppressClick = useRef(false);
+  const pendingSlot = useRef<number | null>(null);
   const prevHand = useRef<number[]>([]);
   const [now, setNow] = useState(() => Date.now());
   const sounds = useSounds();
+  const serverNow = now + clockOffset;
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 250);
     return () => clearInterval(t);
   }, []);
+
+  // Oyun ekranında sayfa kaymasın
+  useEffect(() => {
+    document.body.classList.add("in-game");
+    return () => document.body.classList.remove("in-game");
+  }, []);
+
+  // Ekran yönü değişince ıstakayı yeni şekle taşı
+  useEffect(() => {
+    setSlots((s) => reshape(s, shapeRef.current, shape));
+    shapeRef.current = shape;
+  }, [shape]);
 
   // Sıra bana gelince titreşim + ses
   const turnKey = `${view.handNo}:${view.turn}:${view.phase}`;
@@ -83,19 +119,26 @@ export function Game({ view, clockOffset, busy, onAction, onLeave }: Props) {
   const handKey = view.hand.join(",");
   useEffect(() => {
     const hand = view.hand;
+    const sh = shapeRef.current;
     setSlots((prev) => {
       let base = prev;
       if (!prevHand.current.length) {
-        const saved = lsGet(rackKey(view.code, view.handNo));
-        if (saved) base = JSON.parse(saved);
+        const saved = lsGet(rackKey(view.code, view.handNo, sh));
+        if (saved) {
+          try {
+            const parsed = JSON.parse(saved);
+            if (Array.isArray(parsed) && parsed.length === sh.cols * sh.rows) base = parsed;
+          } catch {}
+        }
       }
       const kept = base.filter((t) => t !== null && hand.includes(t)).length;
       if (okey && kept < hand.length / 2) {
         const a = arrangeGroups(hand, okey);
-        return layoutGroups([...a.groups, a.rest]);
+        return layoutGroups([...a.groups, a.rest], sh);
       }
-      return syncSlots(base, hand);
+      return syncSlots(base, hand, sh, pendingSlot.current);
     });
+    pendingSlot.current = null;
     const added = hand.filter((t) => !prevHand.current.includes(t));
     if (prevHand.current.length && added.length === 1) {
       setFresh(added[0]);
@@ -107,8 +150,9 @@ export function Game({ view, clockOffset, busy, onAction, onLeave }: Props) {
   }, [handKey, view.handNo]);
 
   useEffect(() => {
-    if (slots.some((t) => t !== null)) lsSet(rackKey(view.code, view.handNo), JSON.stringify(slots));
-  }, [slots, view.code, view.handNo]);
+    if (slots.length === shape.cols * shape.rows && slots.some((t) => t !== null))
+      lsSet(rackKey(view.code, view.handNo, shape), JSON.stringify(slots));
+  }, [slots, shape, view.code, view.handNo]);
 
   // Elim bitiyor mu? (Bitir düğmesini parlatmak için)
   const finishTile = useMemo(
@@ -129,9 +173,9 @@ export function Game({ view, clockOffset, busy, onAction, onLeave }: Props) {
     onAction({ type: "finish", tile });
   }
 
-  function onPointerDown(e: React.PointerEvent, tile: number) {
+  function startDrag(e: React.PointerEvent, kind: Drag["kind"], tile: number | null) {
     e.currentTarget.setPointerCapture(e.pointerId);
-    drag.current = { tile, x0: e.clientX, y0: e.clientY, moved: false };
+    drag.current = { kind, tile, x0: e.clientX, y0: e.clientY, moved: false };
   }
 
   function onPointerMove(e: React.PointerEvent) {
@@ -141,34 +185,51 @@ export function Game({ view, clockOffset, busy, onAction, onLeave }: Props) {
     if (d.moved) setGhost({ tile: d.tile, x: e.clientX, y: e.clientY });
   }
 
-  function onPointerUp(e: React.PointerEvent) {
-    const d = drag.current;
+  function cancelDrag() {
     drag.current = null;
     setGhost(null);
+  }
+
+  function onPointerUp(e: React.PointerEvent) {
+    const d = drag.current;
+    cancelDrag();
     if (!d) return;
     if (!d.moved) {
-      sounds.click();
-      setSelected((s) => (s === d.tile ? null : d.tile));
-      return;
+      if (d.kind === "rack" && d.tile !== null) {
+        sounds.click();
+        setSelected((s) => (s === d.tile ? null : d.tile));
+      }
+      return; // deste / yığın dokunuşu onClick ile işlenir
     }
+    suppressClick.current = true;
+    setTimeout(() => (suppressClick.current = false), 50);
     const el = document.elementFromPoint(e.clientX, e.clientY);
     const slotEl = el?.closest("[data-slot]");
-    if (slotEl) {
-      sounds.click();
-      setSlots((s) => moveTile(s, d.tile, Number(slotEl.getAttribute("data-slot"))));
+    if (d.kind === "rack" && d.tile !== null) {
+      if (slotEl) {
+        sounds.click();
+        setSlots((s) => moveTile(s, d.tile!, Number(slotEl.getAttribute("data-slot")), shape.cols));
+      } else if (el?.closest("[data-drop='discard']")) discard(d.tile);
       return;
     }
-    if (el?.closest("[data-drop='discard']")) discard(d.tile);
+    // Desteden ya da yığından ıstakaya sürükleyerek çekme
+    if (canDraw && (slotEl || el?.closest(".rack"))) {
+      const idx = slotEl ? Number(slotEl.getAttribute("data-slot")) : null;
+      pendingSlot.current = idx !== null && slots[idx] === null ? idx : null;
+      onAction({ type: "draw", from: d.kind === "deck" ? "deck" : "discard" });
+    }
   }
 
   function onSlotTap(i: number) {
     if (selected === null || slots[i] !== null) return;
-    setSlots((s) => moveTile(s, selected, i));
+    setSlots((s) => moveTile(s, selected, i, shape.cols));
     setSelected(null);
   }
 
-  const deadlineLeft = Math.max(0, view.deadline - (now + clockOffset));
-  const recent = view.lastAction && now + clockOffset - view.lastAction.at < 1800 ? view.lastAction : null;
+  const deadlineLeft = Math.max(0, view.deadline - serverNow);
+  const recent = view.lastAction && serverNow - view.lastAction.at < 1800 ? view.lastAction : null;
+  const bubbles = new Map<number, string>();
+  for (const m of view.chat) if (serverNow - m.at < BUBBLE_MS && serverNow >= m.at) bubbles.set(m.seat, m.text);
 
   let status: string;
   if (view.phase !== "playing") status = view.lastEvent;
@@ -177,27 +238,41 @@ export function Game({ view, clockOffset, busy, onAction, onLeave }: Props) {
   else if (myTurn) status = "Atacağın taşı seç ya da sağ alttaki yığına sürükle";
   else status = `${view.seats[view.turn]?.name} oynuyor…`;
 
-  const seatProps = { view, deadlineLeft, now: now + clockOffset };
+  const seatProps = { view, deadlineLeft, now: serverNow };
+  const dragHandlers = { onPointerMove, onPointerUp, onPointerCancel: cancelDrag };
 
   return (
-    <div className="game">
+    <div className="game" style={{ ["--cols" as string]: shape.cols, ["--rows" as string]: shape.rows }}>
       <div className="topbar">
-        <button className="link" onClick={onLeave}>
-          ← Çık
+        <button className="link" onClick={() => setLeaving(true)}>
+          ← Kalk
         </button>
         <span className="code">Oda {view.code}</span>
         <span className="hand-no">{view.handNo}. el</span>
         <span className="event">{view.lastEvent}</span>
+        <button className="link icon" onClick={() => setChatOpen((o) => !o)} aria-label="Mesaj">
+          💬
+        </button>
         <button className="link icon" onClick={sounds.toggle} aria-label="Ses">
           {sounds.muted ? "🔇" : "🔊"}
         </button>
       </div>
 
+      {chatOpen && (
+        <ChatPanel
+          onSay={(text) => {
+            setChatOpen(false);
+            onAction({ type: "say", text });
+          }}
+          onClose={() => setChatOpen(false)}
+        />
+      )}
+
       <div className="table">
         <div className="felt">
-          <SeatBox {...seatProps} seat={left} area="left" />
-          <SeatBox {...seatProps} seat={across} area="across" />
-          <SeatBox {...seatProps} seat={right} area="right" />
+          <SeatBox {...seatProps} seat={left} area="left" bubble={bubbles.get(left)} />
+          <SeatBox {...seatProps} seat={across} area="across" bubble={bubbles.get(across)} />
+          <SeatBox {...seatProps} seat={right} area="right" bubble={bubbles.get(right)} />
 
           {/* Köşelerdeki atılan taş yığınları: her oyuncu sağına atar */}
           <Pile
@@ -224,7 +299,13 @@ export function Game({ view, clockOffset, busy, onAction, onLeave }: Props) {
             label={canDraw && leftPile.length ? "Al" : undefined}
             glow={canDraw && leftPile.length > 0}
             flash={recent?.type === "discard" && recent.seat === left}
-            onClick={() => (canDraw && leftPile.length ? onAction({ type: "draw", from: "discard" }) : setHistory(left))}
+            onPointerDown={canDraw && leftPile.length ? (e) => startDrag(e, "pile", leftPile[leftPile.length - 1]) : undefined}
+            {...dragHandlers}
+            onClick={() => {
+              if (suppressClick.current) return;
+              if (canDraw && leftPile.length) onAction({ type: "draw", from: "discard" });
+              else setHistory(left);
+            }}
           />
           <Pile
             area="br"
@@ -242,7 +323,9 @@ export function Game({ view, clockOffset, busy, onAction, onLeave }: Props) {
             <button
               className={`deck ${canDraw ? "glow" : ""} ${recent?.type === "draw" ? "bump" : ""}`}
               disabled={!canDraw || view.deckCount === 0}
-              onClick={() => onAction({ type: "draw", from: "deck" })}
+              onPointerDown={canDraw ? (e) => startDrag(e, "deck", null) : undefined}
+              {...dragHandlers}
+              onClick={() => !suppressClick.current && onAction({ type: "draw", from: "deck" })}
             >
               <div className="deck-stack">
                 <TileBack />
@@ -252,7 +335,13 @@ export function Game({ view, clockOffset, busy, onAction, onLeave }: Props) {
             {view.indicator !== null && (
               <div className="indicator">
                 <Tile id={view.indicator} small />
-                <span>Gösterge</span>
+                {view.canShow ? (
+                  <button className="show-btn glow" onClick={() => onAction({ type: "show" })}>
+                    Göster
+                  </button>
+                ) : (
+                  <span>Gösterge</span>
+                )}
               </div>
             )}
           </div>
@@ -260,28 +349,24 @@ export function Game({ view, clockOffset, busy, onAction, onLeave }: Props) {
           <div className="decor decor-me">
             <TeaGlass full={0.75} />
             <SugarBowl />
+            {bubbles.has(me) && <div className="bubble me">{bubbles.get(me)}</div>}
           </div>
         </div>
       </div>
 
       <div className={`status ${myTurn ? "mine" : ""}`}>
-        {status}
+        <span className="status-text">{status}</span>
         {myTurn && <span className="timer">{Math.ceil(deadlineLeft / 1000)} sn</span>}
       </div>
 
-      <div className="rack" style={{ ["--cols" as string]: ROW }}>
+      <div className="rack">
         {slots.map((t, i) => (
           <div key={i} className="slot" data-slot={i} onClick={() => onSlotTap(i)}>
             {t !== null && (
               <div
                 className={`drag ${ghost?.tile === t ? "dragging" : ""}`}
-                onPointerDown={(e) => onPointerDown(e, t)}
-                onPointerMove={onPointerMove}
-                onPointerUp={onPointerUp}
-                onPointerCancel={() => {
-                  drag.current = null;
-                  setGhost(null);
-                }}
+                onPointerDown={(e) => startDrag(e, "rack", t)}
+                {...dragHandlers}
               >
                 <Tile id={t} okey={okey} selected={selected === t} fresh={fresh === t} />
               </div>
@@ -295,7 +380,7 @@ export function Game({ view, clockOffset, busy, onAction, onLeave }: Props) {
           onClick={() => {
             if (!okey) return;
             const a = arrangeGroups(view.hand, okey);
-            setSlots(layoutGroups([...a.groups, a.rest]));
+            setSlots(layoutGroups([...a.groups, a.rest], shape));
           }}
         >
           Seriye Diz
@@ -304,7 +389,7 @@ export function Game({ view, clockOffset, busy, onAction, onLeave }: Props) {
           onClick={() => {
             if (!okey) return;
             const a = arrangePairs(view.hand, okey);
-            setSlots(layoutGroups([...a.groups, a.rest]));
+            setSlots(layoutGroups([...a.groups, a.rest], shape));
           }}
         >
           Çifte Diz
@@ -323,7 +408,7 @@ export function Game({ view, clockOffset, busy, onAction, onLeave }: Props) {
 
       {ghost && (
         <div className="ghost" style={{ left: ghost.x, top: ghost.y }}>
-          <Tile id={ghost.tile} okey={okey} />
+          {ghost.tile === null ? <TileBack /> : <Tile id={ghost.tile} okey={okey} />}
         </div>
       )}
 
@@ -332,191 +417,10 @@ export function Game({ view, clockOffset, busy, onAction, onLeave }: Props) {
       )}
 
       {view.phase === "ended" && (
-        <EndOverlay view={view} okey={okey} busy={busy} now={now + clockOffset} onAction={onAction} onLeave={onLeave} />
+        <EndOverlay view={view} okey={okey} busy={busy} now={serverNow} onAction={onAction} onLeave={() => setLeaving(true)} />
       )}
-    </div>
-  );
-}
 
-function SeatBox({
-  view,
-  seat,
-  area,
-  deadlineLeft,
-  now,
-}: {
-  view: PlayerView;
-  seat: number;
-  area: string;
-  deadlineLeft: number;
-  now: number;
-}) {
-  const p = view.seats[seat];
-  if (!p) return null;
-  const active = view.phase === "playing" && view.turn === seat;
-  const ratio = active && view.turnLimit ? Math.min(1, deadlineLeft / view.turnLimit) : active ? 1 : 0;
-  const thinking = active && p.isBot;
-  const justTook = view.lastAction?.seat === seat && view.lastAction.type === "take" && now - view.lastAction.at < 2500;
-  return (
-    <div className={`seat seat-${area} ${active ? "active" : ""}`}>
-      <div className="avatar" style={{ ["--p" as string]: ratio }}>
-        <span>{p.isBot ? "🤖" : p.name.slice(0, 1).toLocaleUpperCase("tr")}</span>
-      </div>
-      <div className="seat-text">
-        <div className="seat-name">
-          {!p.online && "⚠️ "}
-          {p.name}
-        </div>
-        <div className="seat-info">
-          <span className="score">★ {p.score}</span>
-          {thinking && <span className="thinking">düşünüyor</span>}
-          {justTook && <span className="took">yerden aldı</span>}
-        </div>
-      </div>
-      <TeaGlass full={0.4 + ((seat * 37) % 50) / 100} />
-    </div>
-  );
-}
-
-function Pile({
-  area,
-  seat,
-  view,
-  okey,
-  label,
-  glow,
-  drop,
-  flash,
-  onClick,
-}: {
-  area: string;
-  seat: number;
-  view: PlayerView;
-  okey: Face | null;
-  label?: string;
-  glow?: boolean;
-  drop?: boolean;
-  flash?: boolean;
-  onClick: () => void;
-}) {
-  const pile = view.seats[seat]?.discards ?? [];
-  const shown = pile.slice(-3);
-  return (
-    <button
-      className={`pile pile-${area} ${glow ? "glow" : ""} ${flash ? "flash" : ""}`}
-      data-drop={drop ? "discard" : undefined}
-      onClick={onClick}
-    >
-      <div className="pile-stack">
-        {shown.length === 0 && <div className="tile empty" />}
-        {shown.map((t, k) => (
-          <div
-            key={t}
-            className={`pile-tile ${k === shown.length - 1 ? "top" : ""}`}
-            style={{ ["--k" as string]: shown.length - 1 - k }}
-          >
-            <Tile id={t} okey={okey} />
-          </div>
-        ))}
-      </div>
-      <span className="pile-label">{label ?? (pile.length ? `${pile.length} taş` : "")}</span>
-    </button>
-  );
-}
-
-function HistoryModal({ seat, isMe, okey, onClose }: { seat: SeatView; isMe: boolean; okey: Face | null; onClose: () => void }) {
-  return (
-    <div className="overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>{isMe ? "Attığın taşlar" : `${seat.name} · atılan taşlar`}</h3>
-        {seat.discards.length ? (
-          <div className="history">
-            {seat.discards.map((t, k) => (
-              <Tile key={`${t}-${k}`} id={t} okey={okey} small />
-            ))}
-          </div>
-        ) : (
-          <p className="muted">Henüz taş atılmadı</p>
-        )}
-        <button onClick={onClose}>Kapat</button>
-      </div>
-    </div>
-  );
-}
-
-function EndOverlay({
-  view,
-  okey,
-  busy,
-  now,
-  onAction,
-  onLeave,
-}: {
-  view: PlayerView;
-  okey: Face | null;
-  busy: boolean;
-  now: number;
-  onAction: (a: Action) => void;
-  onLeave: () => void;
-}) {
-  const winner = view.winner !== null ? view.seats[view.winner] : null;
-  let title: string;
-  if (view.endType === "draw" || !winner) title = "El berabere bitti";
-  else if (view.winner === view.mySeat) title = "Tebrikler, eli kazandın! 🎉";
-  else title = `${winner.name} eli kazandı`;
-  const how = view.endType === "okey" ? "Okey atarak bitirdi! (×2)" : view.endType === "pairs" ? "Çiftten bitirdi! (×2)" : "";
-
-  const ranking = view.seats
-    .map((s, i) => ({ s: s!, i }))
-    .filter((x) => x.s)
-    .sort((a, b) => b.s.score - a.s.score);
-  const champion = view.matchOver ? ranking[0] : null;
-  const secondsLeft = view.nextHandAt ? Math.max(0, Math.ceil((view.nextHandAt - now) / 1000)) : 0;
-
-  return (
-    <div className="overlay">
-      <div className="modal">
-        {champion ? (
-          <h2>{champion.i === view.mySeat ? "Maçı kazandın! 🏆" : `Maçı ${champion.s.name} kazandı 🏆`}</h2>
-        ) : (
-          <h2>{title}</h2>
-        )}
-        {champion && <p className="muted">{title}</p>}
-        {how && <p className="how">{how}</p>}
-        {view.winnerGroups && (
-          <div className="win-hand">
-            {view.winnerGroups.map((g, k) => (
-              <div key={k} className="win-group">
-                {g.map((t) => (
-                  <Tile key={t} id={t} okey={okey} small />
-                ))}
-              </div>
-            ))}
-            {view.winTile !== null && (
-              <div className="win-group thrown">
-                <Tile id={view.winTile} okey={okey} small />
-              </div>
-            )}
-          </div>
-        )}
-        <table className="scores">
-          <tbody>
-            {ranking.map(({ s, i }) => (
-              <tr key={i} className={i === view.mySeat ? "me" : ""}>
-                <td>{s.name}</td>
-                <td className="delta">{s.delta ? s.delta : ""}</td>
-                <td className="pts">★ {s.score}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        <div className="modal-actions">
-          <button className="primary" disabled={busy} onClick={() => onAction({ type: view.matchOver ? "newMatch" : "newHand" })}>
-            {view.matchOver ? "Yeni Maç" : `Sonraki El (${secondsLeft})`}
-          </button>
-          <button onClick={onLeave}>Ana Sayfa</button>
-        </div>
-      </div>
+      {leaving && <ConfirmLeave onConfirm={onLeave} onCancel={() => setLeaving(false)} />}
     </div>
   );
 }

@@ -122,12 +122,21 @@ export async function withRoom<T>(code: string, fn: (state: GameState) => T): Pr
   throw new Error("Oda meşgul, tekrar deneyin");
 }
 
-/** Polling için: kilit alınamazsa beklemeden, kaydetmeden okur. */
-export async function tryWithRoom<T>(code: string, fn: (state: GameState) => T): Promise<T> {
-  if (await store.lock(code)) return lockedUpdate(code, fn);
+/**
+ * Polling için: önce kilitsiz okur. Yalnızca durumun değişmesi gerekiyorsa
+ * (bot hamlesi, süre aşımı, "son görülme") kilit alır; kilit doluysa beklemeden okur.
+ */
+export async function pollRoom<T>(
+  code: string,
+  needsWrite: (state: GameState) => boolean,
+  fn: (state: GameState) => T,
+): Promise<T> {
   const raw = await store.get(code);
   if (!raw) throw new NotFound();
-  return fn(normalize(raw));
+  const state = normalize(raw);
+  if (!needsWrite(state)) return fn(state);
+  if (await store.lock(code)) return lockedUpdate(code, fn);
+  return fn(state);
 }
 
 export class NotFound extends Error {

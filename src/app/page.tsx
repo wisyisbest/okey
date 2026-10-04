@@ -29,7 +29,7 @@ export default function Home() {
 
   function join() {
     if (!name.trim()) return setError("Önce adını yaz");
-    if (!/^\d{4}$/.test(code)) return setError("Oda kodu 4 haneli olmalı");
+    if (!/^\d{4,5}$/.test(code)) return setError("Oda kodu 5 haneli olmalı");
     lsSet("okey:name", name.trim());
     router.push(`/room/${code}`);
   }
@@ -59,7 +59,7 @@ export default function Home() {
           <input
             placeholder="Oda kodu"
             inputMode="numeric"
-            maxLength={4}
+            maxLength={5}
             value={code}
             onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
           />
