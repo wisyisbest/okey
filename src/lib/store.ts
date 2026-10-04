@@ -1,8 +1,8 @@
 import { Redis } from "@upstash/redis";
 import type { GameState } from "./okey/game";
 
-// Oda durumu Upstash Redis'te tutulur. Ortam değişkenleri yoksa (yerel geliştirme)
-// bellek içi depo kullanılır.
+// Oda durumu Supabase (Postgres) ya da Upstash Redis'te tutulur. Ortam
+// değişkenleri yoksa (yerel geliştirme) bellek içi depo kullanılır.
 
 const TTL_SECONDS = 6 * 60 * 60;
 const LOCK_MS = 4000;
@@ -10,7 +10,8 @@ const LOCK_MS = 4000;
 interface Store {
   get(code: string): Promise<GameState | null>;
   set(state: GameState): Promise<void>;
-  exists(code: string): Promise<boolean>;
+  /** Oda yoksa oluşturur; kod doluysa false döner. */
+  create(state: GameState): Promise<boolean>;
   lock(code: string): Promise<boolean>;
   unlock(code: string): Promise<void>;
 }
@@ -21,11 +22,34 @@ function redisStore(redis: Redis): Store {
     set: async (state) => {
       await redis.set(`room:${state.code}`, state, { ex: TTL_SECONDS });
     },
-    exists: async (code) => (await redis.exists(`room:${code}`)) > 0,
+    create: async (state) =>
+      (await redis.set(`room:${state.code}`, state, { ex: TTL_SECONDS, nx: true })) === "OK",
     lock: async (code) => (await redis.set(`lock:${code}`, 1, { nx: true, px: LOCK_MS })) === "OK",
     unlock: async (code) => {
       await redis.del(`lock:${code}`);
     },
+  };
+}
+
+/** supabase/okey.sql içindeki okey_* fonksiyonlarını REST üzerinden çağırır. */
+function supabaseStore(url: string, key: string, secret: string): Store {
+  async function rpc<T>(fn: string, args: Record<string, unknown>): Promise<T> {
+    const res = await fetch(`${url}/rest/v1/rpc/${fn}`, {
+      method: "POST",
+      headers: { apikey: key, "Content-Type": "application/json" },
+      body: JSON.stringify({ p_secret: secret, ...args }),
+      cache: "no-store",
+    });
+    if (!res.ok) throw new Error(`Supabase ${fn}: ${res.status} ${await res.text()}`);
+    const text = await res.text();
+    return (text ? JSON.parse(text) : null) as T;
+  }
+  return {
+    get: (code) => rpc<GameState | null>("okey_get", { p_code: code }),
+    set: (state) => rpc("okey_set", { p_code: state.code, p_state: state, p_ttl_seconds: TTL_SECONDS }),
+    create: (state) => rpc<boolean>("okey_create", { p_code: state.code, p_state: state, p_ttl_seconds: TTL_SECONDS }),
+    lock: (code) => rpc<boolean>("okey_lock", { p_code: code, p_ms: LOCK_MS }),
+    unlock: (code) => rpc("okey_unlock", { p_code: code }),
   };
 }
 
@@ -41,7 +65,11 @@ function memoryStore(): Store {
     set: async (state) => {
       rooms.set(state.code, JSON.stringify(state));
     },
-    exists: async (code) => rooms.has(code),
+    create: async (state) => {
+      if (rooms.has(state.code)) return false;
+      rooms.set(state.code, JSON.stringify(state));
+      return true;
+    },
     lock: async (code) => {
       const until = locks.get(code) ?? 0;
       if (until > Date.now()) return false;
@@ -55,10 +83,12 @@ function memoryStore(): Store {
 }
 
 function createStore(): Store {
+  const { SUPABASE_URL, SUPABASE_KEY, OKEY_DB_SECRET } = process.env;
+  if (SUPABASE_URL && SUPABASE_KEY && OKEY_DB_SECRET) return supabaseStore(SUPABASE_URL, SUPABASE_KEY, OKEY_DB_SECRET);
   const url = process.env.KV_REST_API_URL ?? process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
   if (url && token) return redisStore(new Redis({ url, token }));
-  if (process.env.VERCEL) console.warn("Redis ortam değişkenleri bulunamadı, bellek içi depo kullanılıyor");
+  if (process.env.VERCEL) console.warn("Veritabanı ortam değişkenleri bulunamadı, bellek içi depo kullanılıyor");
   return memoryStore();
 }
 

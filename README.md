@@ -3,7 +3,7 @@
 Telefon tarayıcısında oynanan, online, basit Okey oyunu. Oda kur, kodu ya da linki paylaş; boş yerlere bot oturur. Oyun sırasında gelen oyuncu bir botun yerine geçer.
 
 - Next.js (App Router) + TypeScript, Vercel'de çalışır
-- Oyun durumu Upstash Redis'te (ortam değişkenleri yoksa bellek içi depo)
+- Oyun durumu Supabase (Postgres) ya da Upstash Redis'te (ortam değişkenleri yoksa bellek içi depo)
 - İstemci 1 saniyede bir durumu sorgular; tüm kurallar sunucuda çalışır, herkes sadece kendi taşlarını görür
 - Plan ve kurallar: [PLAN.md](PLAN.md)
 
@@ -17,11 +17,13 @@ npm test        # kural motoru testleri
 
 ## Vercel'e yayınlama
 
-1. [vercel.com/new](https://vercel.com/new) adresinden bu GitHub reposunu içe aktar (ayar gerekmez, Next.js otomatik algılanır).
-2. Proje sayfasında **Storage → Create / Connect → Upstash for Redis** ile ücretsiz bir Redis ekle ve projeye bağla. `KV_REST_API_URL` ve `KV_REST_API_TOKEN` (ya da `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN`) değişkenleri otomatik eklenir.
+1. [vercel.com/new](https://vercel.com/new) adresinden bu GitHub reposunu içe aktar (Next.js otomatik algılanır).
+2. Depolama için iki seçenek var:
+   - **Supabase:** `supabase/okey.sql` dosyasını Supabase SQL Editor'da bir kez çalıştır (`__SECRET_SHA256__` yerine gizli anahtarın sha256 özetini yaz). Vercel'e `SUPABASE_URL`, `SUPABASE_KEY` (publishable key) ve `OKEY_DB_SECRET` değişkenlerini ekle. Tablolar API'ye kapalı ayrı bir `okey` şemasında durur; erişim sadece gizli anahtar isteyen `okey_*` fonksiyonlarıyla olur.
+   - **Upstash Redis:** Vercel proje sayfasında **Storage → Upstash for Redis** ekle; `KV_REST_API_URL` / `KV_REST_API_TOKEN` otomatik gelir.
 3. Yeniden deploy et.
 
-> Redis bağlanmadan da açılır, ama serverless fonksiyonlar arasında bellek paylaşılmadığı için odalar kaybolabilir. Online oyun için Redis gerekli.
+> Veritabanı bağlanmadan da açılır, ama serverless fonksiyonlar arasında bellek paylaşılmadığı için odalar kaybolabilir.
 
 ## Nasıl oynanır
 
