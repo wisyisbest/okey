@@ -33,16 +33,17 @@ export async function POST(req: Request, ctx: { params: Promise<{ code: string }
       switch (body.type) {
         case "start":
         case "newHand":
+        case "newMatch":
           startGame(state, seat, now);
           break;
         case "draw":
-          drawTile(state, seat, body.from === "discard" ? "discard" : "deck");
+          drawTile(state, seat, body.from === "discard" ? "discard" : "deck", now);
           break;
         case "discard":
           discardTile(state, seat, tile, now);
           break;
         case "finish":
-          finishHand(state, seat, tile);
+          finishHand(state, seat, tile, now);
           break;
         default:
           throw new GameError("Geçersiz işlem");

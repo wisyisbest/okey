@@ -1,5 +1,5 @@
 import { Redis } from "@upstash/redis";
-import type { GameState } from "./okey/game";
+import { normalize, type GameState } from "./okey/game";
 
 // Oda durumu Supabase (Postgres) ya da Upstash Redis'te tutulur. Ortam
 // değişkenleri yoksa (yerel geliştirme) bellek içi depo kullanılır.
@@ -98,8 +98,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function lockedUpdate<T>(code: string, fn: (state: GameState) => T): Promise<T> {
   try {
-    const state = await store.get(code);
-    if (!state) throw new NotFound();
+    const raw = await store.get(code);
+    if (!raw) throw new NotFound();
+    const state = normalize(raw);
     const before = JSON.stringify(state);
     const result = fn(state);
     if (JSON.stringify(state) !== before) {
@@ -124,9 +125,9 @@ export async function withRoom<T>(code: string, fn: (state: GameState) => T): Pr
 /** Polling için: kilit alınamazsa beklemeden, kaydetmeden okur. */
 export async function tryWithRoom<T>(code: string, fn: (state: GameState) => T): Promise<T> {
   if (await store.lock(code)) return lockedUpdate(code, fn);
-  const state = await store.get(code);
-  if (!state) throw new NotFound();
-  return fn(state);
+  const raw = await store.get(code);
+  if (!raw) throw new NotFound();
+  return fn(normalize(raw));
 }
 
 export class NotFound extends Error {

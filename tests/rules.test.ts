@@ -135,3 +135,31 @@ describe("oyun akışı", () => {
     expect(s.discards[0]).toEqual([tile]);
   });
 });
+
+describe("maç ve puanlama", () => {
+  it("el bitince puan düşer, süre dolunca yeni el başlar, 0'a düşünce maç biter", () => {
+    const s = createRoom("9", "A", "a", 0);
+    startGame(s, 0, 0);
+    for (const p of s.seats) p!.isBot = true;
+    let now = 0;
+    while (s.phase === "playing") advance(s, (now += 1000));
+    if (s.winner !== null) {
+      const penalty = s.endType === "normal" ? 2 : 4;
+      expect(s.scores.filter((x) => x === 20 - penalty).length).toBe(3);
+      expect(s.scores[s.winner]).toBe(20);
+    }
+    const hand = s.handNo;
+    advance(s, s.endedAt + 16_000);
+    expect(s.handNo).toBe(hand + 1);
+    expect(s.phase as string).toBe("playing");
+
+    // Maç sonu: puanı 0'a düşen olunca yeni el kendiliğinden başlamaz
+    s.scores = [20, 2, 20, 20];
+    while ((s.phase as string) === "playing") advance(s, (now = Math.max(now, s.turnStartedAt) + 1000));
+    if (s.winner !== null && s.winner !== 1) {
+      expect(s.matchOver).toBe(true);
+      advance(s, s.endedAt + 60_000);
+      expect(s.phase).toBe("ended");
+    }
+  });
+});

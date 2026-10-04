@@ -31,4 +31,6 @@ npm test        # kural motoru testleri
 - Taşı seçmek için dokun, yerini değiştirmek için sürükle. **Seriye Diz** / **Çifte Diz** otomatik dizer.
 - Atmak için taşı seç ve **At**'a bas (ya da sağdaki "At" alanına sürükle).
 - Elin bittiyse atacağın taşı seçip **Bitir**'e bas: 14 taşın tamamı per (aynı renk sıralı ≥3, ya da farklı renk aynı sayı 3–4) ya da 7 çift olmalı. Okey her taşın yerine geçer, sahte okey okeyin değerini alır.
-- 30 saniyede oynamayan oyuncunun hamlesini bot yapar.
+- Atılan taşlar masanın köşelerinde görünür; bir yığına dokununca o oyuncunun attığı tüm taşlar listelenir.
+- 45 saniyede oynamayan oyuncunun hamlesini bot yapar.
+- Maç: herkes 20 puanla başlar. El bitince diğerleri 2 puan kaybeder (okey atarak ya da çiftten bitirirse 4). Biri 0'a düşünce maç biter, en yüksek puanlı kazanır. Eller arasında 15 saniye sonra yeni el kendiliğinden başlar.

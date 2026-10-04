@@ -52,6 +52,7 @@ export type Action =
   | { type: "join"; name: string }
   | { type: "start" }
   | { type: "newHand" }
+  | { type: "newMatch" }
   | { type: "draw"; from: "deck" | "discard" }
   | { type: "discard"; tile: number }
   | { type: "finish"; tile: number };

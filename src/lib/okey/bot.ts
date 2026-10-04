@@ -27,20 +27,23 @@ export function bestFinish(hand: number[], okey: Face): number | null {
   return null;
 }
 
-/** 15 taşlık elden atılacak en işe yaramaz taşı seçer (okey asla atılmaz). */
-export function chooseDiscard(hand: number[], okey: Face): number {
-  let bestTile = hand[0];
-  let bestScore = -Infinity;
-  for (const t of hand) {
-    if (isJoker(t, okey)) continue;
-    const score = handScore(
-      hand.filter((x) => x !== t),
-      okey,
-    );
-    if (score > bestScore) {
-      bestScore = score;
-      bestTile = t;
-    }
-  }
-  return bestTile;
+/**
+ * 15 taşlık elden atılacak taşı seçer (okey asla atılmaz).
+ * Ustalık düşükse en iyi birkaç seçenek arasından rastgele seçer, insan gibi hata yapar.
+ */
+export function chooseDiscard(hand: number[], okey: Face, skill = 1, rng: () => number = Math.random): number {
+  const options = hand
+    .filter((t) => !isJoker(t, okey))
+    .map((t) => ({
+      t,
+      score: handScore(
+        hand.filter((x) => x !== t),
+        okey,
+      ),
+    }))
+    .sort((a, b) => b.score - a.score);
+  if (!options.length) return hand[0];
+  if (rng() < skill) return options[0].t;
+  const pool = options.slice(0, Math.min(5, options.length));
+  return pool[Math.floor(rng() * pool.length)].t;
 }

@@ -13,6 +13,7 @@ interface Props {
 export function Lobby({ view, busy, onStart, onLeave }: Props) {
   const [copied, setCopied] = useState(false);
   const isHost = view.mySeat === view.host;
+  const canStart = isHost || !view.seats[view.host]?.online;
 
   async function share() {
     const url = `${location.origin}/room/${view.code}`;
@@ -34,7 +35,7 @@ export function Lobby({ view, busy, onStart, onLeave }: Props) {
     <main className="screen">
       <div className="card">
         <h1>Oda {view.code}</h1>
-        <p className="muted">Arkadaşlarını davet et. Boş kalan yerlere bot oturur.</p>
+        <p className="muted">Arkadaşlarını davet et. Boş kalan yerlere bot oturur. Herkes 20 puanla başlar; biri 0'a düşünce maç biter, en yüksek puanlı kazanır.</p>
         <ul className="seats">
           {view.seats.map((p, s) => (
             <li key={s} className={p ? "" : "empty"}>
@@ -45,7 +46,7 @@ export function Lobby({ view, busy, onStart, onLeave }: Props) {
           ))}
         </ul>
         <button onClick={share}>{copied ? "Link kopyalandı ✓" : "Davet linkini paylaş"}</button>
-        {isHost ? (
+        {canStart ? (
           <button className="primary big" disabled={busy} onClick={onStart}>
             Oyunu Başlat
           </button>

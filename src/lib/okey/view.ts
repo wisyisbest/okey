@@ -1,4 +1,14 @@
-import { EndType, GameState, OFFLINE_MS, Phase, prevSeat, seatOf, turnDeadline } from "./game";
+import {
+  EndType,
+  GameState,
+  isOnline,
+  LastAction,
+  NEXT_HAND_MS,
+  Phase,
+  seatOf,
+  TURN_LIMIT_MS,
+  turnDeadline,
+} from "./game";
 import { arrangeGroups } from "./rules";
 import { okeyOf } from "./tiles";
 
@@ -7,8 +17,10 @@ export interface SeatView {
   isBot: boolean;
   online: boolean;
   tiles: number;
-  discardTop: number | null;
-  discardCount: number;
+  /** Bu oyuncunun attığı taşlar (herkese açık), en son atılan en sonda */
+  discards: number[];
+  score: number;
+  delta: number;
 }
 
 /** Bir oyuncunun gördüğü durum (diğerlerinin taşları gizli). */
@@ -27,11 +39,16 @@ export interface PlayerView {
   turn: number;
   drawn: boolean;
   deadline: number;
+  turnLimit: number;
   winner: number | null;
   endType: EndType | null;
   winTile: number | null;
   /** El bitince kazananın dizilmiş eli */
   winnerGroups: number[][] | null;
+  matchOver: boolean;
+  /** Yeni elin kendiliğinden başlayacağı an */
+  nextHandAt: number | null;
+  lastAction: LastAction | null;
   lastEvent: string;
 }
 
@@ -43,6 +60,7 @@ export function playerView(state: GameState, token: string, now: number): Player
     const arranged = arrangeGroups(state.hands[state.winner], okeyOf(state.indicator));
     winnerGroups = arranged.rest.length ? [...arranged.groups, arranged.rest] : arranged.groups;
   }
+  const current = state.seats[state.turn];
   return {
     code: state.code,
     version: state.version,
@@ -56,10 +74,11 @@ export function playerView(state: GameState, token: string, now: number): Player
         ? {
             name: p.name,
             isBot: p.isBot,
-            online: p.isBot || now - p.lastSeen < OFFLINE_MS,
+            online: isOnline(p, now),
             tiles: state.hands[s].length,
-            discardTop: state.discards[s].at(-1) ?? null,
-            discardCount: state.discards[s].length,
+            discards: state.discards[s],
+            score: state.scores[s],
+            delta: state.lastDelta[s],
           }
         : null,
     ),
@@ -69,12 +88,14 @@ export function playerView(state: GameState, token: string, now: number): Player
     turn: state.turn,
     drawn: state.drawn,
     deadline: state.phase === "playing" ? turnDeadline(state, now) : 0,
+    turnLimit: current && !current.isBot ? TURN_LIMIT_MS : 0,
     winner: state.winner,
     endType: state.endType,
     winTile: state.winTile,
     winnerGroups,
+    matchOver: state.matchOver,
+    nextHandAt: state.phase === "ended" && !state.matchOver ? state.endedAt + NEXT_HAND_MS : null,
+    lastAction: state.lastAction,
     lastEvent: state.lastEvent,
   };
 }
-
-export { prevSeat };
